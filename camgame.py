@@ -12,13 +12,13 @@ pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 cap = cv2.VideoCapture(0)
 
 # Cooldown time to prevent multiple key presses from one gesture
-cooldown = 0.8  # seconds - increased from 0.5
+cooldown = 0.4  # seconds - decreased from 0.8
 last_action_time = time.time()
-block_update_interval = 0.1  # Time between continuous block updates
+block_update_interval = 0.05  # Time between continuous block updates - decreased from 0.1
 
 # Track position history for movement detection
 position_history = []
-max_history = 5  # Reduced from 10 to decrease detection lag
+max_history = 4  # Reduced to decrease detection lag
 
 # State tracking
 head_state = "center"  # Can be "left", "center", "right"
@@ -26,6 +26,15 @@ last_gesture = None    # Track the last detected gesture to prevent repeats
 gesture_locked = False # Lock to prevent repeated detections
 block_active = False   # Track if block is currently active
 last_block_time = 0    # Last time block was refreshed
+
+# Uppercut detection parameters
+uppercut_threshold = -0.08  # Negative value for upward movement
+uppercut_cooldown = 0.3  # Decreased from 0.5 for faster responses
+last_uppercut_time = 0
+
+# Upper punch zone parameters
+upper_punch_cooldown = 0.3  # Decreased from 0.5 for faster responses
+last_upper_punch_time = 0
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -113,6 +122,8 @@ while cap.isOpened():
         if len(position_history) >= 3 and not block_active:  # Removed the gesture_locked check for movement
             # Get movement vectors - only use recent frames (last 3) to detect quicker movements
             nose_movement = position_history[-1]["nose"] - position_history[-3]["nose"]
+            left_wrist_movement = position_history[-1]["left_wrist"] - position_history[-3]["left_wrist"]
+            right_wrist_movement = position_history[-1]["right_wrist"] - position_history[-3]["right_wrist"]
             
             # Debug info - print nose position and movement
             print(f"Nose position: {nose.x:.2f}, Movement: {nose_movement[0]:.4f}")
@@ -139,15 +150,84 @@ while cap.isOpened():
                         last_action_time = current_time
                         last_gesture = "right"
                         position_history = position_history[-2:]  # Keep only recent history
+            
+            # 2. UPPERCUT DETECTION
+            # Detect significant upward movement of both wrists
+            if (current_time - last_uppercut_time) > uppercut_cooldown:
+                # Check if both wrists moved upward significantly
+                if (left_wrist_movement[1] < uppercut_threshold and 
+                    right_wrist_movement[1] < uppercut_threshold and
+                    left_wrist.y < left_shoulder.y and 
+                    right_wrist.y < right_shoulder.y):
+                    
+                    print(f"Uppercut detected! Left: {left_wrist_movement[1]:.4f}, Right: {right_wrist_movement[1]:.4f}")
+                    print("Uppercut (K)")
+                    pyautogui.press('k')
+                    last_uppercut_time = current_time
+                    last_action_time = current_time  # Also update general cooldown
+                    last_gesture = "uppercut"
+                    position_history = position_history[-2:]  # Keep only recent history
+                    
+            # 3. UPPER PUNCH DETECTION USING TARGET ZONE
+            # Define upper punch zone above the head
+            upper_punch_zone_y_top = nose.y - 0.25  # Zone starts above the nose
+            upper_punch_zone_y_bottom = nose.y - 0.05  # Zone ends closer to the nose
+            upper_punch_zone_x_left = nose.x - 0.15  # Zone extends left of nose
+            upper_punch_zone_x_right = nose.x + 0.15  # Zone extends right of nose
+            
+            # Draw the upper punch target zone
+            upper_zone_left = int(width * upper_punch_zone_x_left)
+            upper_zone_right = int(width * upper_punch_zone_x_right)
+            upper_zone_top = int(height * upper_punch_zone_y_top)
+            upper_zone_bottom = int(height * upper_punch_zone_y_bottom)
+            
+            # Determine zone color based on cooldown status
+            zone_color = (0, 255, 0) if (current_time - last_upper_punch_time) > upper_punch_cooldown else (0, 0, 255)
+            cv2.rectangle(frame, 
+                        (upper_zone_left, upper_zone_top), 
+                        (upper_zone_right, upper_zone_bottom), 
+                        zone_color, 2)
+            
+            # Check if either wrist is in the upper punch zone and cooldown elapsed
+            if (current_time - last_upper_punch_time) > upper_punch_cooldown:
+                left_wrist_in_zone = (
+                    upper_punch_zone_x_left < left_wrist.x < upper_punch_zone_x_right and
+                    upper_punch_zone_y_top < left_wrist.y < upper_punch_zone_y_bottom
+                )
+                
+                right_wrist_in_zone = (
+                    upper_punch_zone_x_left < right_wrist.x < upper_punch_zone_x_right and
+                    upper_punch_zone_y_top < right_wrist.y < upper_punch_zone_y_bottom
+                )
+                
+                if left_wrist_in_zone or right_wrist_in_zone:
+                    wrist_name = "Left" if left_wrist_in_zone else "Right"
+                    print(f"{wrist_name} wrist in upper punch zone!")
+                    print("Upper Punch (K)")
+                    pyautogui.press('k')
+                    last_upper_punch_time = current_time
+                    last_action_time = current_time  # Also update general cooldown
+                    last_gesture = "upper_punch"
+                    position_history = position_history[-2:]  # Keep only recent history
 
         # Display the webcam feed with landmarks drawn
         cv2.putText(frame, f"Nose X: {nose.x:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         if len(position_history) >= 3:
             cv2.putText(frame, f"Movement: {nose_movement[0]:.4f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            # Add uppercut movement debug info
+            cv2.putText(frame, f"L Wrist Y: {left_wrist_movement[1]:.4f}", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(frame, f"R Wrist Y: {right_wrist_movement[1]:.4f}", (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
         # Display block status
         if block_active:
             cv2.putText(frame, "BLOCKING", (width//2-60, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        
+        # Display uppercut/upper punch status if recently performed
+        if current_time - last_uppercut_time < 0.5:  # Show for half a second
+            cv2.putText(frame, "UPPERCUT", (width//2-60, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
+        elif current_time - last_upper_punch_time < 0.5:  # Show for half a second
+            cv2.putText(frame, "UPPER PUNCH", (width//2-80, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
         
         # Highlight block detection zone
         block_left = int(width * 0.35)
